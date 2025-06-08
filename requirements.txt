@@ -1,0 +1,9 @@
+numpy
+scipy
+pandas
+torch
+tqdm
+ONE-api
+wget
+transformers
+
