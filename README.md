@@ -1,6 +1,6 @@
 # Pre-trained Large Language Models Learn *Hidden* Markov Models In-context
 
-This is the official implementation of the experiments in the paper [Pre-trained Large Language Models Learn *Hidden* Markov Models In-context](). This repository contains both synthetic experiments with Hidden Markov Models (HMMs) and real-world experiments on animal behavioral datasets, including the [IBL behavior dataset](https://int-brain-lab.github.io/iblenv/notebooks_external/data_release_behavior.html) and the [reward learning dataset](https://figshare.com/articles/dataset/From_predictive_models_to_cognitive_models_Separable_behavioral_processes_underlying_reward_learning_in_the_rat/20449356).
+This is the official implementation of the experiments in the paper [Pre-trained Large Language Models Learn *Hidden* Markov Models In-context](https://arxiv.org/abs/2506.07298). This repository contains both synthetic experiments with Hidden Markov Models (HMMs) and real-world experiments on animal behavioral datasets, including the [IBL behavior dataset](https://int-brain-lab.github.io/iblenv/notebooks_external/data_release_behavior.html) and the [reward learning dataset](https://figshare.com/articles/dataset/From_predictive_models_to_cognitive_models_Separable_behavioral_processes_underlying_reward_learning_in_the_rat/20449356).
 
 ![Project summary](figures/summary.png)
 
@@ -63,7 +63,14 @@ icl_hmm/
 
 ## Citation
 
-<!-- Please add your citation here when available. -->
 ```
-[To be added]
+@misc{dai2025pretrainedlargelanguagemodels,
+      title={Pre-trained Large Language Models Learn Hidden Markov Models In-context}, 
+      author={Yijia Dai and Zhaolin Gao and Yahya Satter and Sarah Dean and Jennifer J. Sun},
+      year={2025},
+      eprint={2506.07298},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2506.07298}, 
+}
 ```
