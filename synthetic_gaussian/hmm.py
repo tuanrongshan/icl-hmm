@@ -8,18 +8,18 @@ class HMM:
     def __init__(self):
         '''
         A is a matrix of size num_states x num_states
-        B is a matrix of size num_states x num_observations
+        mean is a vector of size num_states
+        std is a vector of size num_states
         pi is a vector of size num_states
         '''
         self.states = []
         self.num_states = len(self.states)
-        self.observations = []
-        self.num_observations = len(self.observations)
+        self.means = np.array([])
+        self.stds = np.array([])
         self.A = np.array([])
-        self.B = np.array([])
         self.pi = np.array([])
 
-    def generate_sequence(self, length: int) -> Tuple[List[str], List[str]]:
+    def generate_sequence(self, length: int) -> Tuple[List[float], List[str]]:
         """
         Generate a sequence of observations and corresponding hidden states.
         
@@ -37,8 +37,7 @@ class HMM:
         
         for t in range(length):
             # Generate observation based on current state
-            obs_idx = np.random.choice(range(self.num_observations), p=self.B[current_state])
-            observations.append(self.observations[obs_idx])
+            observations.append(np.random.normal(self.means[current_state], self.stds[current_state]))
             
             if t < length - 1:  # Don't transition after the last observation
                 # Transition to next state
@@ -53,8 +52,14 @@ class HMM:
         """
         max_val = np.max(log_probs)
         return max_val + np.log(np.sum(np.exp(log_probs - max_val)))
+
+    def gaussian_pdf(x, mean, std):
+        """
+        Calculate Guassian PDF.
+        """
+        return (1.0 / (np.sqrt(2 * np.pi) * std)) * np.exp(-0.5 * ((x - mean) / std) ** 2)
     
-    def viterbi_decode(self, observations: List[str]) -> List[str]:
+    def viterbi_decode(self, observations: List[float]) -> List[str]:
         """
         Decode the most likely sequence of hidden states using the Viterbi algorithm.
         
@@ -66,16 +71,13 @@ class HMM:
         """
         T = len(observations)
         
-        # Convert observations to indices
-        obs_indices = [self.observations.index(obs) for obs in observations]
-        
         # Initialize Viterbi variables (using log probabilities)
         log_delta = np.zeros((self.num_states, T))
         psi = np.zeros((self.num_states, T), dtype=int)
         
         # Initialization step
         for s in range(self.num_states):
-            log_delta[s, 0] = np.log(self.pi[s]) + np.log(self.B[s, obs_indices[0]])
+            log_delta[s, 0] = np.log(self.pi[s]) + np.log(gaussian_pdf(observations[0], self.means[s], self.stds[s]))
             psi[s, 0] = 0
         
         # Recursion step
@@ -88,7 +90,7 @@ class HMM:
                 
                 # Find the most likely previous state
                 psi[s, t] = np.argmax(log_probs)
-                log_delta[s, t] = log_probs[psi[s, t]] + np.log(self.B[s, obs_indices[t]])
+                log_delta[s, t] = log_probs[psi[s, t]] + np.log(gaussian_pdf(observations[t], self.means[s], self.stds[s]))
         
         # Termination step: find the most likely final state
         final_state = np.argmax(log_delta[:, T-1])
@@ -101,7 +103,7 @@ class HMM:
         # Convert state indices to state names
         return [self.states[i] for i in best_path]
     
-    def forward_algorithm(self, observations: List[str]) -> float:
+    def forward_algorithm(self, observations: List[float]) -> float:
         """
         Calculate the likelihood of observations using the Forward algorithm.
         
@@ -113,15 +115,12 @@ class HMM:
         """
         T = len(observations)
         
-        # Convert observations to indices
-        obs_indices = [self.observations.index(obs) for obs in observations]
-        
         # Initialize forward variables (in log space)
         log_alpha = np.zeros((self.num_states, T))
         
         # Initialization step
         for s in range(self.num_states):
-            log_alpha[s, 0] = np.log(self.pi[s]) + np.log(self.B[s, obs_indices[0]])
+            log_alpha[s, 0] = np.log(self.pi[s]) + np.log(gaussian_pdf(observations[0], self.means[s], self.stds[s]))
         
         # Recursion step
         for t in range(1, T):
@@ -132,12 +131,12 @@ class HMM:
                     log_probs[s_prev] = log_alpha[s_prev, t-1] + np.log(self.A[s_prev, s])
                 
                 # Sum these probabilities (in log space) and add the emission probability
-                log_alpha[s, t] = self.log_sum_exp(log_probs) + np.log(self.B[s, obs_indices[t]])
+                log_alpha[s, t] = self.log_sum_exp(log_probs) + np.log(gaussian_pdf(observations[t], self.means[s], self.stds[s]))
         
         # Termination step: compute the log probability of the entire sequence
         return self.log_sum_exp(log_alpha[:, T-1])
     
-    def backward_algorithm(self, observations: List[str]) -> np.ndarray:
+    def backward_algorithm(self, observations: List[float]) -> np.ndarray:
         """
         Implement the Backward algorithm for HMM.
         
@@ -148,9 +147,6 @@ class HMM:
             Log-scaled backward variables
         """
         T = len(observations)
-        
-        # Convert observations to indices
-        obs_indices = [self.observations.index(obs) for obs in observations]
         
         # Initialize backward variables (in log space)
         log_beta = np.zeros((self.num_states, T))
@@ -165,14 +161,14 @@ class HMM:
                 log_probs = np.zeros(self.num_states)
                 for s_next in range(self.num_states):
                     log_probs[s_next] = np.log(self.A[s, s_next]) + \
-                                        np.log(self.B[s_next, obs_indices[t+1]]) + \
+                                        np.log(gaussian_pdf(observations[t+1], self.means[s_next], self.stds[s_next])) + \
                                         log_beta[s_next, t+1]
                 
                 log_beta[s, t] = self.log_sum_exp(log_probs)
         
         return log_beta
 
-    def probability_of_state_given_observations(self, observations: List[str]) -> List[List[float]]:
+    def probability_of_state_given_observations(self, observations: List[float]) -> List[List[float]]:
         """
         Calculate P(X_t = i | Y_{1:T}) for all states i and times t.
         
@@ -186,11 +182,10 @@ class HMM:
         
         # Run forward and backward algorithms
         log_alpha = np.zeros((self.num_states, T))
-        obs_indices = [self.observations.index(obs) for obs in observations]
         
         # Forward initialization
         for s in range(self.num_states):
-            log_alpha[s, 0] = np.log(self.pi[s]) + np.log(self.B[s, obs_indices[0]])
+            log_alpha[s, 0] = np.log(self.pi[s]) + np.log(gaussian_pdf(observations[0], self.means[s], self.stds[s]))
         
         # Forward recursion
         for t in range(1, T):
@@ -199,7 +194,7 @@ class HMM:
                 for s_prev in range(self.num_states):
                     log_probs[s_prev] = log_alpha[s_prev, t-1] + np.log(self.A[s_prev, s])
                 
-                log_alpha[s, t] = self.log_sum_exp(log_probs) + np.log(self.B[s, obs_indices[t]])
+                log_alpha[s, t] = self.log_sum_exp(log_probs) + np.log(gaussian_pdf(observations[t], self.means[s], self.stds[s]))
         
         # Run backward algorithm
         log_beta = self.backward_algorithm(observations)
@@ -222,19 +217,19 @@ class HMM:
         return state_probs
 
 class CustomHMM(HMM):
-    def __init__(self, states: List[int], observations: List[int], A: np.ndarray, B: np.ndarray, pi: np.ndarray):
+    def __init__(self, states: List[int], means: np.ndarray, stds: np.ndarray, A: np.ndarray, pi: np.ndarray):
         self.states = states
         self.num_states = len(states)
-        self.observations = observations
-        self.num_observations = len(observations)
+        self.means = means
+        self.stds = stds
         assert A.shape == (self.num_states, self.num_states)
-        assert B.shape == (self.num_states, self.num_observations)
+        assert means.shape == (self.num_states,)
+        assert stds.shape == (self.num_states,)
         assert pi.shape == (self.num_states,)
         self.A = A
-        self.B = B
         self.pi = pi
 
-    def generate_sequence(self, length: int, seed: int) -> Tuple[List[str], List[str]]:
+    def generate_sequence(self, length: int, seed: int) -> Tuple[List[float], List[str]]:
         """
         Generate a sequence of observations and corresponding hidden states.
         
@@ -254,8 +249,7 @@ class CustomHMM(HMM):
         
         for t in range(length):
             # Generate observation based on current state
-            obs_idx = np.random.choice(range(self.num_observations), p=self.B[current_state])
-            observations.append(self.observations[obs_idx])
+            observations.append(np.random.normal(self.means[current_state], self.stds[current_state]))
             
             if t < length - 1:  # Don't transition after the last observation
                 # Transition to next state
@@ -264,7 +258,7 @@ class CustomHMM(HMM):
         
         return observations, hidden_states
 
-    def generate_dataset(self, num_sequences: int, length: int, seed: int) -> List[Tuple[List[str], List[str]]]:
+    def generate_dataset(self, num_sequences: int, length: int, seed: int) -> List[Tuple[List[float], List[str]]]:
         """
         Generate a dataset of sequences with varying lengths.
         
@@ -325,24 +319,18 @@ def build_transition_matrices(num_states: int, entropy_gap: int = 0.5) -> List[n
     
     return A
 
-def build_emission_matrices(num_states: int, num_observations: int, entropy_gap: int = 0.5) -> List[np.ndarray]:
-    
-    # entropy = 0
-    B_0 = np.zeros((num_states, num_observations))
-    for i in range(num_states):
-        B_0[i, i%num_observations] = 1
+def build_emission_matrices(num_states: int, obs_min: float, obs_max: float, std_gap: float = 1.) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+    means = np.linspace(obs_min, obs_max, num_states)
 
-    B = [B_0]
-    entropies = [0]
-    e = entropy_gap
-    while e < math.log2(num_observations):
-        p = solve_for_p(num_observations, e)
-        assert abs(-p * math.log2(p) - (1 - p) * math.log2((1 - p) / (num_observations - 1)) - e) < 1e-5 and p >= (1 - p) / (num_observations - 1) - 1e-5
-        B.append(p * B[0] + (1 - p) / (num_observations - 1) * (1 - B[0]))
-        entropies.append(e)
-        e += entropy_gap
+    means_list = []
+    stds_list = []
+    std = 0
+    while std < (obs_max - obs_min) / 3:
+        means_list.append(means.copy())
+        stds_list.append(np.random.normal(std, std / 2, num_states))
+        std += std_gap
     
-    return B, entropies
+    return means_list, stds_list
 
 def build_initial_distribution(num_states: int) -> List[np.ndarray]:
     
@@ -809,23 +797,23 @@ def calculate_entropy_rate(matrix, stationary_dist=None):
 
 if __name__ == "__main__":
     NUM_STATES = [4, 8, 16, 32, 64]
-    NUM_OBSERVATIONS = [4, 8, 16, 32, 64]
+    OBS_LENGTH = [4, 8, 16, 32, 64]
     SEQ_LENGTH = [5, 10, 20, 50, 100]
     NUM_SEQUENCES = 100
 
     for num_states in NUM_STATES:
-        for num_observations in NUM_OBSERVATIONS:
+        for obs_length in OBS_LENGTH:
             for seq_length in SEQ_LENGTH:
                 # A_list = build_transition_matrices(num_states, num_observations)
                 A_list = build_ergodic_unichain_transition_matrices(num_states)
                 print(A_list)
                 entropy_rate_list = [calculate_entropy_rate(A) for A in A_list]
                 print(entropy_rate_list)
-                B_list = build_emission_matrices(num_states, num_observations)
+                means_list, stds_list = build_emission_matrices(num_states, -float(obs_length) / 2, float(obs_length) / 2)
                 pis = build_initial_distribution(num_states)
                 for A in A_list:
-                    for B in B_list:
+                    for means, stds in zip(means_list, stds_list):
                         for pi in pis:
-                            hmm = CustomHMM(np.arange(num_states), np.arange(num_observations), A, B, pi)
+                            hmm = CustomHMM(np.arange(num_states), means, stds, A, pi)
                             hmm.generate_dataset(NUM_SEQUENCES, seq_length, seed=5775709)
 

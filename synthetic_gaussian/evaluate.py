@@ -9,6 +9,7 @@ import multiprocessing
 import pickle
 from functools import partial
 from collections import defaultdict
+from torch.distributions import Normal
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 
@@ -37,15 +38,6 @@ def set_seed(seed=5775709):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-
-
-def number_to_index(n: int) -> str:
-    result = ""
-    m = n + 1
-    while m > 0:
-        m, remainder = divmod(m - 1, 26)
-        result = chr(65 + remainder) + result
-    return ' ' + result
 
 
 def kl_divergence(logp, logq):
@@ -81,79 +73,76 @@ def add_to_results(results, new_result):
     return results
 
 
-def evaluate_llm(model, tokenizer, emission_prob, state_seq, emission_seq, index_map, batch_size, place_to_eval):
-
-    # index to token
-    index_token_map = []
-    for k in index_map:
-        token = tokenizer(k)['input_ids']
-        assert len(token) == 1
-        index_token_map.append(token[0])
-    index_token_map = np.array(index_token_map)
-
-    # construct prompt
-    inputs = []
-    for seq in emission_seq:
-        inputs.append(index_token_map[seq])
-    inputs = np.array(inputs)
-
+def evaluate_llm(model, emission_mean, emission_std, state_seq, emission_seq, batch_size, place_to_eval):
     # prepare
-    emission_prob = torch.from_numpy(emission_prob).to(model.device)
-    emission_logprob = torch.log(emission_prob)
-    index_token_map = torch.from_numpy(index_token_map).long().to(model.device)
+    emission_mean = torch.from_numpy(emission_mean).float().to(model.device)
+    emission_std = torch.from_numpy(emission_std).float().to(model.device)
     place_to_eval = torch.tensor(place_to_eval).long().to(model.device)
 
     # evaluate
-    llm_emission_acc, llm_emission_prob, llm_emission_reverse_kl, llm_emission_forward_kl, llm_emission_hellinger_distance = [], [], [], [], []
+    llm_emission_acc, llm_emission_logprob, llm_emission_reverse_kl, llm_emission_forward_kl, llm_emission_hellinger_distance = [], [], [], [], []
     with torch.no_grad():
-        for start_idx in tqdm(range(0, len(inputs), batch_size)):
+        for start_idx in tqdm(range(0, len(emission_seq), batch_size)):
 
             # prepare batch
-            end_idx = min(start_idx + batch_size, len(inputs))
-            batch = torch.from_numpy(inputs[start_idx:end_idx]).long().to(model.device)
+            end_idx = min(start_idx + batch_size, len(emission_seq))
+            batch = torch.tensor(emission_seq[start_idx:end_idx]).float().to(model.device)
 
-            batch_label = torch.tensor(emission_seq[start_idx:end_idx]).long().to(model.device)[:, place_to_eval]
+            batch_label = batch[:, place_to_eval]
             batch_state_label = torch.tensor(state_seq[start_idx:end_idx]).long().to(model.device)[:, place_to_eval]
 
-            # gather prob
+            # model cont. representation
             output = model(batch, return_dict=True)
-            logits = output.logits[:, place_to_eval - 1]
-            all_logprob = F.log_softmax(logits, dim=-1)[:, :, index_token_map]
+            features = output.last_hidden_state[:, place_to_eval - 1, :]
+            
+            num_states = emission_mean.shape[0]
+            log_probs = []
+
+            # compute gaussian log prob per state
+            for s in range(num_states):
+                dist = Normal(emission_mean[s], emission_std[s])
+                log_prob = dist.log_prob(features)
+                log_probs.append(log_prob)
+
+            all_logprob = torch.stack(log_probs, dim=1)
             all_prob = torch.exp(all_logprob)
             all_prob = all_prob / all_prob.sum(-1, keepdim=True)
 
             # compute accuracy
-            predicted_emission = torch.argmax(all_prob, dim=-1)
-            llm_emission_acc.append(predicted_emission == batch_label)
+            predicted_state = torch.argmax(all_prob, dim=1)
+            llm_emission_acc.append(predicted_state == batch_state_label).float().mean()
 
             # compute prob
-            prob = torch.gather(all_prob, 2, batch_label.unsqueeze(-1)).squeeze(-1)
-            llm_emission_prob.append(prob)
+            prob = all_logprob.gather(1, batch_state_label.unsqueeze(1)).mean()
+            llm_emission_logprob.append(prob)
 
             # compute kl
-            all_logprob = torch.log(all_prob)
-            label_logprob_label = emission_logprob[batch_state_label]
-            llm_emission_reverse_kl.append(kl_divergence(all_logprob, label_logprob_label))
-            llm_emission_forward_kl.append(kl_divergence(label_logprob_label, all_logprob))
-            llm_emission_hellinger_distance.append(hellinger_distance(all_prob, emission_prob[batch_state_label]))
+            true_logprob = torch.zeros_like(batch_label)
+            for idx, s in enumerate(batch_state_label):
+                true_dist = Normal(emission_mean[s], emission_std[s])
+                true_logprob[idx] = true_dist.log_prob(batch_label[idx])
+
+            llm_emission_reverse_kl.append(kl_divergence(true_logprob, all_logprob))
+            llm_emission_forward_kl.append(kl_divergence(all_logprob, true_logprob))
+            llm_emission_hellinger_distance.append(hellinger_distance(all_prob, torch.exp(true_logprob)))
 
     all_results = [
         torch.cat(llm_emission_acc).float().cpu().tolist(),
-        torch.cat(llm_emission_prob).float().cpu().tolist(),
+        torch.cat(llm_emission_logprob).float().cpu().tolist(),
         torch.cat(llm_emission_reverse_kl).float().cpu().tolist(),
         torch.cat(llm_emission_forward_kl).float().cpu().tolist(),
         torch.cat(llm_emission_hellinger_distance).float().cpu().tolist(),
     ]
 
     llm_emission_acc = torch.cat(llm_emission_acc).float().mean(0).cpu().tolist()
-    llm_emission_prob = torch.cat(llm_emission_prob).float().mean(0).cpu().tolist()
+    llm_emission_logprob = torch.cat(llm_emission_logprob).float().mean(0).cpu().tolist()
     llm_emission_reverse_kl = torch.cat(llm_emission_reverse_kl).float().mean(0).cpu().tolist()
     llm_emission_forward_kl = torch.cat(llm_emission_forward_kl).float().mean(0).cpu().tolist()
     llm_emission_hellinger_distance = torch.cat(llm_emission_hellinger_distance).float().mean(0).cpu().tolist()
 
     return {
         'llm_emission_acc': llm_emission_acc,
-        'llm_emission_prob': llm_emission_prob,
+        'llm_emission_logprob': llm_emission_logprob,
         'llm_emission_reverse_kl': llm_emission_reverse_kl,
         'llm_emission_forward_kl': llm_emission_forward_kl,
         'llm_emission_hellinger_distance': llm_emission_hellinger_distance,
@@ -859,31 +848,17 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2", device_map="auto")
 
-    MAX_NUM_OBSERVATIONS = 64
     SEQ_LENGTH = [4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
     BASELINE_PREV_K = 4
 
     with open(args.dataset, 'rb') as file:
         object_file = pickle.load(file)
-    num_states, steady_states, lambda2s, Us, Sigmas, U_invs, As, A_entropys, num_observations, observations, hidden_states, Bs, B_entropys, pi_0s = object_file
-    
-    # prep for evaluation
-    assert MAX_NUM_OBSERVATIONS < 26 ** 2
-
-    # gather string index
-    all_index_map = []
-    i = -1
-    while len(all_index_map) < MAX_NUM_OBSERVATIONS:
-        i += 1
-        if len(tokenizer(number_to_index(i))['input_ids']) != 1:
-            continue
-        all_index_map.append(number_to_index(i))
-    all_index_map = np.array(all_index_map)
+    num_states, steady_states, lambda2s, Us, Sigmas, U_invs, As, A_entropys, observations, hidden_states, means_list, stds_list, pi_0s = object_file
 
     # evaluation
     results = {}
     llm_all_results, bw_all_results, lstm_all_results = [], [], []
-    for num_state, steady_state, lambda2, U, Sigma, U_inv, A, A_entropy, num_observation, observation, hidden_state, B, B_entropy, pi_0 in tqdm(zip(num_states, steady_states, lambda2s, Us, Sigmas, U_invs, As, A_entropys, num_observations, observations, hidden_states, Bs, B_entropys, pi_0s), total=len(num_states)):
+    for num_state, steady_state, lambda2, U, Sigma, U_inv, A, A_entropy, observation, hidden_state, means, stds, pi_0 in tqdm(zip(num_states, steady_states, lambda2s, Us, Sigmas, U_invs, As, A_entropys, observations, hidden_states, means_list, stds_list, pi_0s), total=len(num_states)):
 
         A = (np.array(A) / np.sum(A, axis=1, keepdims=True)).tolist()
 
@@ -897,54 +872,54 @@ def main():
         meta_info['U_inv'] = U_inv
         meta_info['A'] = A
         meta_info['A_entropy'] = A_entropy
-        meta_info['num_observation'] = num_observation
-        meta_info['B'] = B
-        meta_info['B_entropy'] = B_entropy
+        meta_info['means'] = means
+        meta_info['stds'] = stds
         meta_info['pi_0'] = pi_0
         results = add_to_results(results, meta_info)
 
         # prep
         A = np.array(A)
-        B = np.array(B)
+        means = np.array(means)
+        stds = np.array(stds)
         pi_0 = np.array(pi_0)
 
         # record llm_result
-        llm_result, llm_all_result = evaluate_llm(model, tokenizer, B, hidden_state, observation, all_index_map[:num_observation], args.batch_size, SEQ_LENGTH)
+        llm_result, llm_all_result = evaluate_llm(model, means, stds, hidden_state, observation, args.batch_size, SEQ_LENGTH)
         results = add_to_results(results, llm_result)
         llm_all_results.append(llm_all_result)
         print('done LLM')
         
-        # record random_result
-        random_result = evaluate_random(B, hidden_state, observation, SEQ_LENGTH)
-        results = add_to_results(results, random_result)
-        print('done Random')
+        # # record random_result
+        # random_result = evaluate_random(B, hidden_state, observation, SEQ_LENGTH)
+        # results = add_to_results(results, random_result)
+        # print('done Random')
 
-        # record previous_prob_result
-        previous_prob_result = evaluate_previous_prob(B, hidden_state, observation, SEQ_LENGTH)
-        results = add_to_results(results, previous_prob_result)
-        print('done previous prob')
+        # # record previous_prob_result
+        # previous_prob_result = evaluate_previous_prob(B, hidden_state, observation, SEQ_LENGTH)
+        # results = add_to_results(results, previous_prob_result)
+        # print('done previous prob')
 
-        # record oracle_result
-        oracle_result = evaluate_oracle_result(A, B, pi_0, hidden_state, observation, SEQ_LENGTH, BASELINE_PREV_K)
-        results = add_to_results(results, oracle_result)
-        print('done oracle')
+        # # record oracle_result
+        # oracle_result = evaluate_oracle_result(A, B, pi_0, hidden_state, observation, SEQ_LENGTH, BASELINE_PREV_K)
+        # results = add_to_results(results, oracle_result)
+        # print('done oracle')
 
-        # viterbi algorithm
-        viterbi_result = viterbi_vectorized(A, B, pi_0, hidden_state, observation, SEQ_LENGTH)
-        results = add_to_results(results, viterbi_result)
-        print('done Viterbi')
+        # # viterbi algorithm
+        # viterbi_result = viterbi_vectorized(A, B, pi_0, hidden_state, observation, SEQ_LENGTH)
+        # results = add_to_results(results, viterbi_result)
+        # print('done Viterbi')
 
-        # BW algorithm
-        bw_result, bw_all_result = evaluate_bw(A, B, pi_0, hidden_state, observation, SEQ_LENGTH)
-        results = add_to_results(results, bw_result)
-        bw_all_results.append(bw_all_result)
-        print('done BW')
+        # # BW algorithm
+        # bw_result, bw_all_result = evaluate_bw(A, B, pi_0, hidden_state, observation, SEQ_LENGTH)
+        # results = add_to_results(results, bw_result)
+        # bw_all_results.append(bw_all_result)
+        # print('done BW')
 
-        # record lstm_result
-        lstm_result, lstm_all_result = evaluate_lstm(args, B, hidden_state, observation, num_observation, SEQ_LENGTH)
-        results = add_to_results(results, lstm_result)
-        lstm_all_results.append(lstm_all_result)
-        print('done lstm')
+        # # record lstm_result
+        # lstm_result, lstm_all_result = evaluate_lstm(args, B, hidden_state, observation, num_observation, SEQ_LENGTH)
+        # results = add_to_results(results, lstm_result)
+        # lstm_all_results.append(lstm_all_result)
+        # print('done lstm')
 
     # Save the results to a CSV file
     df = pd.DataFrame(results)
@@ -952,7 +927,7 @@ def main():
 
     # save llm_all_results, bw_all_results, and lstm_all_results
     with open(args.save_pickle, 'wb') as f:
-        pickle.dump((llm_all_results, bw_all_results, lstm_all_results), f)
+        pickle.dump((llm_all_results,), f)
 
 
 if __name__ == "__main__":
