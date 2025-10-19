@@ -332,6 +332,12 @@ def build_emission_matrices(num_states: int, obs_min: float, obs_max: float, std
     
     return means_list, stds_list
 
+def build_emission_matrices_std(num_states: int, obs_min: float, obs_max: float, std: float) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+    means = np.random.permutation(np.linspace(obs_min, obs_max, num_states))
+    stds = np.random.normal(std, std / 4, num_states)
+    
+    return means, stds
+
 def build_initial_distribution(num_states: int) -> List[np.ndarray]:
     
     # deterministic

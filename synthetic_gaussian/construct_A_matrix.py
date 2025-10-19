@@ -179,12 +179,12 @@ def train_matrix_parametrizer(n, w, lambda_2, num_epochs=5000,
 
 if __name__ == "__main__":
 
-    NUM_STATES = [4, 8, 16, 32, 64]
-    STEADY_STATE_DISTRIBUTION = [1, 4, 16]
-    MIXING_RATE = [0.99, 0.95, 0.75, 0.5]
+    NUM_STATES = [4, 8, 16]
+    STEADY_STATE_DISTRIBUTION = [1, 4]
+    MIXING_RATE = [0.75, 0.5]
 
-    REPEATS = 100
-    MAX_NUM_RETRY = 100
+    REPEATS = 20
+    MAX_NUM_RETRY = 20
 
     As = []
     all_pi_0, all_lambda2 = [], []
