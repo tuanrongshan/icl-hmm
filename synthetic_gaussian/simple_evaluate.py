@@ -3,16 +3,10 @@ import random
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import multiprocessing
 import pandas as pd
 import pickle
 import json
 import re
-from functools import partial
-from collections import defaultdict
-from torch.distributions import Normal
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 
@@ -74,7 +68,7 @@ def inference_batch(batch_obs):
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=10,
+            max_new_tokens=20,
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id
         )
@@ -83,12 +77,17 @@ def inference_batch(batch_obs):
     results = []
     for response in responses:
         try:
-            match = re.search(r'\{.*\}', response)
-            if match:
-                result_json = json.loads(match.group())
-                results.append(float(result_json["next_value"]))
-            else:
-                results.append(None)
+            matches = re.findall(r'\{.*?\}', response)
+            res = None
+            for m in matches:
+                try:
+                    val = json.loads(m).get("next_value", None)
+                    if isinstance(val, (int, float)):
+                        res = float(val)
+                        break
+                except:
+                    pass
+            results.append(res)
         except:
             results.append(None)
         
@@ -96,7 +95,7 @@ def inference_batch(batch_obs):
 
 
 data_size = len(num_states) // 7
-entropys = [args.selected_std] * (data_size // 7)
+entropys = [args.selected_std] * data_size
 predictions = []
 pdfs = []
 
@@ -112,8 +111,8 @@ for i in tqdm(range(data_l, data_r, batch_size)):
     batch_predict = inference_batch(batch_obs)
     predictions.extend(batch_predict)
 
-    def gaussian_pdf(x, mean, std):
-        return (1.0 / (np.sqrt(2 * np.pi) * std)) * np.exp(-0.5 * ((x - mean) / std) ** 2)
+    def gaussian_pdf(x, mean, std) -> float:
+        return float(min(1., (1.0 / (np.sqrt(2 * np.pi) * std + 1e-12)) * np.exp(-0.5 * ((x - mean) / (std + 1e-12)) ** 2)))
     
     for predict, hidden_state, means, stds in zip(batch_predict, batch_hidden, batch_means, batch_stds):
         if predict is not None:
