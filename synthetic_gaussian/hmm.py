@@ -19,7 +19,7 @@ class HMM:
         self.A = np.array([])
         self.pi = np.array([])
 
-    def generate_sequence(self, length: int) -> Tuple[List[float], List[str]]:
+    def generate_sequence(self, length: int) -> Tuple[List[int], List[str]]:
         """
         Generate a sequence of observations and corresponding hidden states.
         
@@ -37,7 +37,8 @@ class HMM:
         
         for t in range(length):
             # Generate observation based on current state
-            observations.append(np.random.normal(self.means[current_state], self.stds[current_state]))
+            sample = np.random.normal(self.means[current_state], self.stds[current_state])
+            observations.append(np.round(sample).astype(int))
             
             if t < length - 1:  # Don't transition after the last observation
                 # Transition to next state
@@ -229,7 +230,7 @@ class CustomHMM(HMM):
         self.A = A
         self.pi = pi
 
-    def generate_sequence(self, length: int, seed: int) -> Tuple[List[float], List[str]]:
+    def generate_sequence(self, length: int, seed: int) -> Tuple[List[int], List[str]]:
         """
         Generate a sequence of observations and corresponding hidden states.
         
@@ -249,7 +250,8 @@ class CustomHMM(HMM):
         
         for t in range(length):
             # Generate observation based on current state
-            observations.append(np.random.normal(self.means[current_state], self.stds[current_state]))
+            sample = np.random.normal(self.means[current_state], self.stds[current_state])
+            observations.append(np.round(sample).astype(int))
             
             if t < length - 1:  # Don't transition after the last observation
                 # Transition to next state
@@ -258,7 +260,7 @@ class CustomHMM(HMM):
         
         return observations, hidden_states
 
-    def generate_dataset(self, num_sequences: int, length: int, seed: int) -> List[Tuple[List[float], List[str]]]:
+    def generate_dataset(self, num_sequences: int, length: int, seed: int) -> List[Tuple[List[int], List[str]]]:
         """
         Generate a dataset of sequences with varying lengths.
         
