@@ -10,6 +10,7 @@ import re
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 
+MAX_SEQ_LEN = 100
 
 def parse_arguments():
     """Parse command line arguments."""
@@ -55,7 +56,7 @@ num_states, lambda2s, Us, Sigmas, U_invs, As, A_entropys, observations, hidden_s
 def inference_batch(batch_obs):
     prompts = []
     for obs in batch_obs:
-        obs_str = ", ".join([f"{x:.5f}" for x in obs])
+        obs_str = ", ".join([f"{x}" for x in obs])
         prompt = (
             f"Predict the next number in the sequence below.\n"
             f"Output JSON only in the format: {{\"next_value\": number}}\n"
@@ -103,7 +104,7 @@ data_l = data_size * args.selected_std
 data_r = data_size * (args.selected_std + 1)
 batch_size = args.batch_size
 for i in tqdm(range(data_l, data_r, batch_size)):
-    batch_obs = [obs[:99] for obs in observations[i:i+batch_size]]
+    batch_obs = [obs[:(MAX_SEQ_LEN-1)] for obs in observations[i:i+batch_size]]
     batch_hidden = hidden_states[i:i+batch_size]
     batch_means = means_list[i:i+batch_size]
     batch_stds = stds_list[i:i+batch_size]
@@ -116,7 +117,7 @@ for i in tqdm(range(data_l, data_r, batch_size)):
     
     for predict, hidden_state, means, stds in zip(batch_predict, batch_hidden, batch_means, batch_stds):
         if predict is not None:
-            state_label = int(hidden_state[99])
+            state_label = int(hidden_state[MAX_SEQ_LEN-1])
             pdfs.append(gaussian_pdf(predict, means[state_label], stds[state_label]))
         else:
             pdfs.append(None)
